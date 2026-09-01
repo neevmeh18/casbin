@@ -44,14 +44,15 @@ type Enforcer struct {
 	fm        model.FunctionMap
 	eft       effector.Effector
 
-	adapter    persist.Adapter
-	watcher    persist.Watcher
-	dispatcher persist.Dispatcher
-	rmMap      map[string]rbac.RoleManager
-	condRmMap  map[string]rbac.ConditionalRoleManager
-	matcherMap sync.Map
-	logger     log.Logger
-	detectors  []detector.Detector
+	adapter          persist.Adapter
+	watcher          persist.Watcher
+	dispatcher       persist.Dispatcher
+	rmMap            map[string]rbac.RoleManager
+	condRmMap        map[string]rbac.ConditionalRoleManager
+	matcherMap       sync.Map
+	logger           log.Logger
+	detectors        []detector.Detector
+	policyValidators []PolicyValidator
 
 	enabled              bool
 	autoSave             bool
@@ -329,7 +330,7 @@ func (e *Enforcer) RunDetections() error {
 	// Run detectors on all role managers
 	for _, rm := range e.rmMap {
 		for _, d := range e.detectors {
-			err := d.Check(rm)
+			err := invokePolicyDetector(d, rm)
 			// Skip if the role manager doesn't support the required iteration or is not initialized
 			if err != nil && (strings.Contains(err.Error(), "does not support Range iteration") ||
 				strings.Contains(err.Error(), "not properly initialized")) {
@@ -344,7 +345,7 @@ func (e *Enforcer) RunDetections() error {
 	// Run detectors on all conditional role managers
 	for _, crm := range e.condRmMap {
 		for _, d := range e.detectors {
-			err := d.Check(crm)
+			err := invokePolicyDetector(d, crm)
 			// Skip if the role manager doesn't support the required iteration or is not initialized
 			if err != nil && (strings.Contains(err.Error(), "does not support Range iteration") ||
 				strings.Contains(err.Error(), "not properly initialized")) {
@@ -374,68 +375,82 @@ func (e *Enforcer) ClearPolicy() {
 func (e *Enforcer) LoadPolicy() error {
 	logEntry := e.onLogBeforeEventInLoadPolicy()
 
-	newModel, err := e.loadPolicyFromAdapter(e.model)
+	prepared, err := e.loadPolicyFromAdapter(e.model)
 	if err != nil {
 		e.onLogAfterEventWithError(logEntry, err)
 		return err
 	}
-	err = e.applyModifiedModel(newModel)
+	err = e.applyModifiedModel(prepared)
 	if err != nil {
 		e.onLogAfterEventWithError(logEntry, err)
 		return err
 	}
 
-	e.onLogAfterEventInLoadPolicy(logEntry, newModel)
-
-	// Run detectors after all policy rules are loaded
-	err = e.RunDetections()
-	if err != nil {
-		return err
-	}
-
+	e.onLogAfterEventInLoadPolicy(logEntry, prepared.candidate)
 	return nil
 }
 
-func (e *Enforcer) loadPolicyFromAdapter(baseModel model.Model) (model.Model, error) {
-	newModel := baseModel.Copy()
-	newModel.ClearPolicy()
+func (e *Enforcer) loadPolicyFromAdapter(baseModel model.Model) (preparedPolicyReload, error) {
+	loadTarget := policyLoadTarget(baseModel)
 
-	if err := e.adapter.LoadPolicy(newModel); err != nil && err.Error() != "invalid file path, file path cannot be empty" {
-		return nil, err
+	if err := e.adapter.LoadPolicy(loadTarget); err != nil && err.Error() != "invalid file path, file path cannot be empty" {
+		return preparedPolicyReload{}, fmt.Errorf("load policy: adapter load failed: %w", err)
 	}
 
+	// The adapter is extension code and may retain the model it was given.
+	// Commit from a separate copy so later adapter mutations cannot alter the
+	// validated candidate through an alias.
+	newModel := isolateLoadedPolicy(loadTarget)
+
 	if err := newModel.SortPoliciesBySubjectHierarchy(); err != nil {
-		return nil, err
+		return preparedPolicyReload{}, fmt.Errorf("load policy: subject hierarchy sort failed: %w", err)
 	}
 
 	if err := newModel.SortPoliciesByPriority(); err != nil {
-		return nil, err
+		return preparedPolicyReload{}, fmt.Errorf("load policy: priority sort failed: %w", err)
 	}
 
-	return newModel, nil
+	return e.preparePolicyReload(newModel)
 }
 
-func (e *Enforcer) applyModifiedModel(newModel model.Model) error {
-	var err error
-	needToRebuild := false
-	defer func() {
-		if err != nil {
-			if e.autoBuildRoleLinks && needToRebuild {
-				_ = e.BuildRoleLinks()
-			}
-		}
-	}()
-
+func (e *Enforcer) applyModifiedModel(prepared preparedPolicyReload) (err error) {
+	newModel, err := prepared.modelForCommit()
+	if err != nil {
+		return err
+	}
 	if e.autoBuildRoleLinks {
-		needToRebuild = true
+		defer func() {
+			if err == nil {
+				return
+			}
 
-		if err := e.rebuildRoleLinks(newModel); err != nil {
+			// Rebuild the role-manager state from the still-active model.
+			// The model swap happens only after both candidate rebuilds succeed.
+			if rollbackErr := e.rebuildRoleLinks(e.model); rollbackErr != nil {
+				err = fmt.Errorf("%w; role-link rollback failed: %v", err, rollbackErr)
+			}
+			if rollbackErr := e.rebuildConditionalRoleLinks(e.model); rollbackErr != nil {
+				err = fmt.Errorf("%w; conditional role-link rollback failed: %v", err, rollbackErr)
+			}
+		}()
+
+		if rebuildErr := e.rebuildRoleLinks(newModel); rebuildErr != nil {
+			err = fmt.Errorf("load policy: role-link rebuild failed: %w", rebuildErr)
 			return err
 		}
 
-		if err := e.rebuildConditionalRoleLinks(newModel); err != nil {
+		if rebuildErr := e.rebuildConditionalRoleLinks(newModel); rebuildErr != nil {
+			err = fmt.Errorf("load policy: conditional role-link rebuild failed: %w", rebuildErr)
 			return err
 		}
+	}
+
+	// Detectors inspect the role-manager state. With automatic role-link building
+	// enabled that state now represents the candidate, but the active model has
+	// not yet been swapped. Any detector failure therefore rejects atomically.
+	if detectionErr := e.RunDetections(); detectionErr != nil {
+		err = fmt.Errorf("load policy: detector rejected candidate: %w", detectionErr)
+		return err
 	}
 
 	e.model = newModel

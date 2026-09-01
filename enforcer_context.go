@@ -57,34 +57,34 @@ func NewContextEnforcer(params ...interface{}) (IEnforcerContext, error) {
 
 // LoadPolicyCtx loads all policy rules from the storage with context.
 func (e *ContextEnforcer) LoadPolicyCtx(ctx context.Context) error {
-	newModel, err := e.loadPolicyFromAdapterCtx(ctx, e.model)
+	prepared, err := e.loadPolicyFromAdapterCtx(ctx, e.model)
 	if err != nil {
 		return err
 	}
-	err = e.applyModifiedModel(newModel)
+	err = e.applyModifiedModel(prepared)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func (e *ContextEnforcer) loadPolicyFromAdapterCtx(ctx context.Context, baseModel model.Model) (model.Model, error) {
-	newModel := baseModel.Copy()
-	newModel.ClearPolicy()
+func (e *ContextEnforcer) loadPolicyFromAdapterCtx(ctx context.Context, baseModel model.Model) (preparedPolicyReload, error) {
+	loadTarget := policyLoadTarget(baseModel)
 
-	if err := e.adapterCtx.LoadPolicyCtx(ctx, newModel); err != nil && err.Error() != "invalid file path, file path cannot be empty" {
-		return nil, err
+	if err := e.adapterCtx.LoadPolicyCtx(ctx, loadTarget); err != nil && err.Error() != "invalid file path, file path cannot be empty" {
+		return preparedPolicyReload{}, fmt.Errorf("load policy: context adapter load failed: %w", err)
 	}
 
+	newModel := isolateLoadedPolicy(loadTarget)
 	if err := newModel.SortPoliciesBySubjectHierarchy(); err != nil {
-		return nil, err
+		return preparedPolicyReload{}, fmt.Errorf("load policy: subject hierarchy sort failed: %w", err)
 	}
 
 	if err := newModel.SortPoliciesByPriority(); err != nil {
-		return nil, err
+		return preparedPolicyReload{}, fmt.Errorf("load policy: priority sort failed: %w", err)
 	}
 
-	return newModel, nil
+	return e.preparePolicyReload(newModel)
 }
 
 // LoadFilteredPolicyCtx loads all policy rules from the storage with context and filter.
