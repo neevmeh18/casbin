@@ -73,14 +73,18 @@ func (e *ContextEnforcer) loadPolicyFromAdapterCtx(ctx context.Context, baseMode
 	newModel.ClearPolicy()
 
 	if err := e.adapterCtx.LoadPolicyCtx(ctx, newModel); err != nil && err.Error() != "invalid file path, file path cannot be empty" {
-		return nil, err
+		return nil, fmt.Errorf("load policy: context adapter load failed: %w", err)
 	}
 
 	if err := newModel.SortPoliciesBySubjectHierarchy(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load policy: subject hierarchy sort failed: %w", err)
 	}
 
 	if err := newModel.SortPoliciesByPriority(); err != nil {
+		return nil, fmt.Errorf("load policy: priority sort failed: %w", err)
+	}
+
+	if err := e.validatePolicyReload(newModel); err != nil {
 		return nil, err
 	}
 

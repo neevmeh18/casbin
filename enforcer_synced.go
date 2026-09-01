@@ -145,6 +145,20 @@ func (e *SyncedEnforcer) ClearPolicy() {
 	e.Enforcer.ClearPolicy()
 }
 
+// AddPolicyValidator adds a policy reload validator with synchronization.
+func (e *SyncedEnforcer) AddPolicyValidator(validator PolicyValidator) {
+	e.m.Lock()
+	defer e.m.Unlock()
+	e.Enforcer.AddPolicyValidator(validator)
+}
+
+// SetPolicyValidators replaces all policy reload validators with synchronization.
+func (e *SyncedEnforcer) SetPolicyValidators(validators ...PolicyValidator) {
+	e.m.Lock()
+	defer e.m.Unlock()
+	e.Enforcer.SetPolicyValidators(validators...)
+}
+
 // LoadPolicy reloads the policy from file/database.
 func (e *SyncedEnforcer) LoadPolicy() error {
 	e.m.RLock()

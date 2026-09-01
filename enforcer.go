@@ -44,14 +44,15 @@ type Enforcer struct {
 	fm        model.FunctionMap
 	eft       effector.Effector
 
-	adapter    persist.Adapter
-	watcher    persist.Watcher
-	dispatcher persist.Dispatcher
-	rmMap      map[string]rbac.RoleManager
-	condRmMap  map[string]rbac.ConditionalRoleManager
-	matcherMap sync.Map
-	logger     log.Logger
-	detectors  []detector.Detector
+	adapter          persist.Adapter
+	watcher          persist.Watcher
+	dispatcher       persist.Dispatcher
+	rmMap            map[string]rbac.RoleManager
+	condRmMap        map[string]rbac.ConditionalRoleManager
+	matcherMap       sync.Map
+	logger           log.Logger
+	detectors        []detector.Detector
+	policyValidators []PolicyValidator
 
 	enabled              bool
 	autoSave             bool
@@ -401,14 +402,18 @@ func (e *Enforcer) loadPolicyFromAdapter(baseModel model.Model) (model.Model, er
 	newModel.ClearPolicy()
 
 	if err := e.adapter.LoadPolicy(newModel); err != nil && err.Error() != "invalid file path, file path cannot be empty" {
-		return nil, err
+		return nil, fmt.Errorf("load policy: adapter load failed: %w", err)
 	}
 
 	if err := newModel.SortPoliciesBySubjectHierarchy(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load policy: subject hierarchy sort failed: %w", err)
 	}
 
 	if err := newModel.SortPoliciesByPriority(); err != nil {
+		return nil, fmt.Errorf("load policy: priority sort failed: %w", err)
+	}
+
+	if err := e.validatePolicyReload(newModel); err != nil {
 		return nil, err
 	}
 
