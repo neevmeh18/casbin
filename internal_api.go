@@ -20,15 +20,89 @@ package casbin
 import (
 	"fmt"
 
+	"github.com/casbin/casbin/v3/detector"
 	Err "github.com/casbin/casbin/v3/errors"
 	"github.com/casbin/casbin/v3/log"
 	"github.com/casbin/casbin/v3/model"
 	"github.com/casbin/casbin/v3/persist"
+	"github.com/casbin/casbin/v3/rbac"
 )
 
 const (
 	notImplemented = "not implemented"
 )
+
+type preparedPolicyReload struct {
+	candidate model.Model
+	seal      *policyReloadSeal
+}
+
+type policyReloadSeal struct{}
+
+var acceptedPolicyReload = &policyReloadSeal{}
+
+func (p preparedPolicyReload) modelForCommit() (model.Model, error) {
+	if p.seal != acceptedPolicyReload || p.candidate == nil {
+		return nil, fmt.Errorf("load policy: candidate was not prepared for commit")
+	}
+	return p.candidate, nil
+}
+
+func policyLoadTarget(base model.Model) model.Model {
+	target := base.Copy()
+	target.ClearPolicy()
+	detachPolicyRuntimeState(target)
+	return target
+}
+
+func isolateLoadedPolicy(loaded model.Model) model.Model {
+	candidate := loaded.Copy()
+	detachPolicyRuntimeState(candidate)
+	return candidate
+}
+
+func detachPolicyRuntimeState(m model.Model) {
+	for _, section := range m {
+		for _, assertion := range section {
+			assertion.RM = nil
+			assertion.CondRM = nil
+		}
+	}
+}
+
+func (e *Enforcer) preparePolicyReload(candidate model.Model) (preparedPolicyReload, error) {
+	for i, validator := range e.policyValidators {
+		if validator == nil {
+			continue
+		}
+		if err := invokePolicyValidator(validator, policyInspectionView(candidate)); err != nil {
+			return preparedPolicyReload{}, fmt.Errorf("load policy: validator %d rejected candidate: %w", i, err)
+		}
+	}
+	return preparedPolicyReload{candidate: candidate, seal: acceptedPolicyReload}, nil
+}
+
+func policyInspectionView(candidate model.Model) model.Model {
+	return isolateLoadedPolicy(candidate)
+}
+
+func invokePolicyValidator(validator PolicyValidator, candidate model.Model) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("validator panic: %v", recovered)
+		}
+	}()
+	return validator.ValidatePolicy(candidate)
+}
+
+func invokePolicyDetector(d detector.Detector, rm rbac.RoleManager) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("detector panic: %v", recovered)
+		}
+	}()
+	return d.Check(rm)
+}
 
 func (e *Enforcer) shouldPersist() bool {
 	return e.adapter != nil && e.autoSave

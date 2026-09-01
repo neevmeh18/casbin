@@ -161,19 +161,17 @@ func (e *SyncedEnforcer) SetPolicyValidators(validators ...PolicyValidator) {
 
 // LoadPolicy reloads the policy from file/database.
 func (e *SyncedEnforcer) LoadPolicy() error {
-	e.m.RLock()
-	newModel, err := e.loadPolicyFromAdapter(e.model)
-	e.m.RUnlock()
-	if err != nil {
-		return err
-	}
+	// Hold the write lock for the complete reload transaction. Releasing a read
+	// lock between staging and applying would allow an intervening policy change
+	// to be overwritten by a stale candidate.
 	e.m.Lock()
-	err = e.applyModifiedModel(newModel)
-	e.m.Unlock()
+	defer e.m.Unlock()
+
+	prepared, err := e.loadPolicyFromAdapter(e.model)
 	if err != nil {
 		return err
 	}
-	return nil
+	return e.applyModifiedModel(prepared)
 }
 
 // LoadFilteredPolicy reloads a filtered policy from file/database.
