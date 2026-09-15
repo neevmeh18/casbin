@@ -70,6 +70,23 @@ func detachPolicyRuntimeState(m model.Model) {
 	}
 }
 
+func attachPolicyRuntimeState(candidate model.Model, active model.Model) {
+	for sec, section := range candidate {
+		activeSection, ok := active[sec]
+		if !ok {
+			continue
+		}
+		for ptype, assertion := range section {
+			activeAssertion, ok := activeSection[ptype]
+			if !ok {
+				continue
+			}
+			assertion.RM = activeAssertion.RM
+			assertion.CondRM = activeAssertion.CondRM
+		}
+	}
+}
+
 func (e *Enforcer) preparePolicyReload(candidate model.Model) (preparedPolicyReload, error) {
 	for i, validator := range e.policyValidators {
 		if validator == nil {

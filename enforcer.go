@@ -418,6 +418,13 @@ func (e *Enforcer) applyModifiedModel(prepared preparedPolicyReload) (err error)
 	if err != nil {
 		return err
 	}
+	if !e.autoBuildRoleLinks {
+		// Preserve the pre-reload runtime role-manager references when automatic
+		// rebuilding is disabled. They are attached only after validation, so
+		// adapters and validators never receive live runtime handles.
+		attachPolicyRuntimeState(newModel, e.model)
+	}
+
 	if e.autoBuildRoleLinks {
 		defer func() {
 			if err == nil {

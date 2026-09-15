@@ -393,3 +393,31 @@ func TestUnpreparedPolicyReloadCannotCommit(t *testing.T) {
 		t.Fatalf("unprepared commit changed active policy: before=%q after=%q", before, after)
 	}
 }
+
+func TestPolicyReloadPreservesRoleManagerWhenAutoBuildDisabled(t *testing.T) {
+	policyFile := filepath.Join(t.TempDir(), "policy.csv")
+	policy := "p, data2_admin, data2, read\ng, alice, data2_admin\n"
+	if err := os.WriteFile(policyFile, []byte(policy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	e, err := NewEnforcer("examples/rbac_model.conf", policyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.EnableAutoBuildRoleLinks(false)
+
+	if err := e.LoadPolicy(); err != nil {
+		t.Fatal(err)
+	}
+
+	assertion := e.model["g"]["g"]
+	if assertion.RM == nil {
+		t.Fatal("reload detached the existing role manager while automatic rebuilding was disabled")
+	}
+
+	allowed, err := e.Enforce("alice", "data2", "read")
+	if err != nil || !allowed {
+		t.Fatalf("existing role-manager state was not preserved, allowed=%v err=%v", allowed, err)
+	}
+}
