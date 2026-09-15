@@ -27,6 +27,19 @@ import (
 	"github.com/casbin/govaluate"
 )
 
+// AddPolicyValidator appends a validation step used by full policy reloads.
+func (e *Enforcer) AddPolicyValidator(validator PolicyValidator) {
+	if validator == nil {
+		return
+	}
+	e.policyValidators = append(e.policyValidators, validator)
+}
+
+// SetPolicyValidators replaces the validation steps used by full policy reloads.
+func (e *Enforcer) SetPolicyValidators(validators ...PolicyValidator) {
+	e.policyValidators = append([]PolicyValidator(nil), validators...)
+}
+
 // GetAllSubjects gets the list of subjects that show up in the current policy.
 func (e *Enforcer) GetAllSubjects() ([]string, error) {
 	return e.model.GetValuesForFieldInPolicyAllTypesByName("p", constant.SubjectIndex)

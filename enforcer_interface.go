@@ -25,6 +25,20 @@ import (
 	"github.com/casbin/govaluate"
 )
 
+// PolicyValidator inspects a fully loaded policy candidate before it can become active.
+// Returning an error rejects the reload.
+type PolicyValidator interface {
+	ValidatePolicy(model.Model) error
+}
+
+// PolicyValidatorFunc adapts a function into a PolicyValidator.
+type PolicyValidatorFunc func(model.Model) error
+
+// ValidatePolicy implements PolicyValidator.
+func (f PolicyValidatorFunc) ValidatePolicy(m model.Model) error {
+	return f(m)
+}
+
 var (
 	_ IEnforcer = &Enforcer{}
 	_ IEnforcer = &SyncedEnforcer{}
@@ -49,6 +63,8 @@ type IEnforcer interface {
 	SetAIConfig(config AIConfig)
 	ClearPolicy()
 	LoadPolicy() error
+	AddPolicyValidator(validator PolicyValidator)
+	SetPolicyValidators(validators ...PolicyValidator)
 	LoadFilteredPolicy(filter interface{}) error
 	LoadIncrementalFilteredPolicy(filter interface{}) error
 	IsFiltered() bool
